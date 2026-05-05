@@ -6,7 +6,7 @@
 //
 
 
-// AuthView.swift
+// Authentication service
 import SwiftUI
 
 struct AuthView: View {
