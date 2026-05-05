@@ -11,12 +11,12 @@ import SwiftUI
 struct Supabase_TestingApp: App {
     var body: some Scene {
         WindowGroup {
-            if SupabaseAuthManager.shared.isLoggedIn {
-                ContentView()
-            } else {
+//            if SupabaseAuthManager.shared.isLoggedIn {
+//                GameStatusView()
+//            } else {
                 AuthView()
 //                PhoneAuthView()
-            }
+//            }
         }
     }
 }

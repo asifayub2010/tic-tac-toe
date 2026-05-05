@@ -11,9 +11,10 @@ import SwiftUI
 
 struct AuthView: View {
     
-    @State private var email = ""
-    @State private var password = ""
+    @State private var email = "asifayub2010@gmail.com"
+    @State private var password = "Abcd@1234"
     @State private var isLogin = true
+    @State private var userLoginState = false
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showSuccess = false
@@ -71,6 +72,9 @@ struct AuthView: View {
                 
                 Spacer()
             }
+            .navigationDestination(isPresented: $userLoginState) {
+                GameStatusView()
+            }
             .padding()
             .navigationTitle("Authentication")
             .alert("Success", isPresented: $showSuccess) {
@@ -90,13 +94,14 @@ struct AuthView: View {
         do {
             if isLogin {
                 _ = try await SupabaseAuthManager.shared.signIn(email: email, password: password)
+                userLoginState = true
             } else {
                 _ = try await SupabaseAuthManager.shared.signUp(email: email, password: password)
             }
             
-            NavigationLink("Go to Detail") {
-                               ContentView()
-                           }
+            
+            
+            
             
             showSuccess = true
         } catch let error as SupabaseError {

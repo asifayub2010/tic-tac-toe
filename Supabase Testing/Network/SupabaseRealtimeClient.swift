@@ -24,6 +24,13 @@ public struct SupabaseRealtimeConfig {
     }
 }
 
+public enum Event: String {
+    case join = "phx_join"
+    case presence = "presence"
+    case broadcast = "broadcast"
+    case move = "move"
+}
+
 // MARK: - Connection State
 
 public enum ConnectionState: Equatable {
@@ -227,7 +234,7 @@ public final class SupabaseRealtimeClient: NSObject {
 
         _send([
             "topic":   topic(for: reg.channelId),
-            "event":   "phx_join",
+            "event":   Event.join.rawValue,
             "payload": [
                 "config": [
                     "presence":  ["enabled": true, "key": reg.presenceKey],
@@ -245,7 +252,7 @@ public final class SupabaseRealtimeClient: NSObject {
         let trackRef = nextRef()
         _send([
             "topic":   topic(for: reg.channelId),
-            "event":   "presence",
+            "event":   Event.presence.rawValue,
             "payload": [
                 "type":    "track",
                 "key":     reg.presenceKey,
@@ -254,6 +261,40 @@ public final class SupabaseRealtimeClient: NSObject {
             "ref": trackRef
         ])
         log("[\(reg.channelId)] presence track sent (ref: \(trackRef))")
+    }
+    
+    // MARK: - Public: Channels
+
+    public func broadcastMove(
+        x: String,
+        y: String,
+        player: String,
+        channelId: String
+    ) {
+        queue.async { [weak self] in
+            guard let self else { return }
+
+            let trackRef = nextRef()
+            let broadcast = [
+                "topic":   topic(for: channelId),
+                "event":   Event.broadcast.rawValue,
+                "payload": [
+                    "event":    Event.move.rawValue,
+                    "payload": [
+                        "player": player,
+                        "x": x,
+                        "y": y
+                    ]
+                ],
+                "ref": trackRef
+            ]
+
+            if self.state.isConnected {
+                _send(broadcast)
+            } else {
+                self.log("[\(channelId)] Queued — will join once socket connects")
+            }
+        }
     }
 
     /// Replays all registered channels after reconnect.

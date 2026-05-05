@@ -13,7 +13,7 @@ struct ContentView: View {
     // Create separate clients for player 1 and player 2
 //    @StateObject private var player1Client = RealtimeClient()
 //    @StateObject private var player2Client = RealtimeClient()
-    @StateObject private var playerClient = SupabaseRealtimeClientViewModel()
+//    @StateObject private var playerClient = SupabaseRealtimeClientViewModel()
     
     var body: some View {
         VStack(spacing: 0) {
@@ -27,9 +27,9 @@ struct ContentView: View {
 //                )
 //            )
             
-            Divider()
-                .background(Color.gray)
-                .frame(height: 2)
+//            Divider()
+//                .background(Color.gray)
+//                .frame(height: 2)
             
             // Player 2 View
 //            PlayerView(
@@ -43,13 +43,7 @@ struct ContentView: View {
         }
         .background(Color.black.opacity(0.05))
         .onAppear {
-            playerClient.connect()
-//            DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
-//                playerClient.joinAChannelByPlayer1()
-//            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
-                playerClient.joinAChannelByPlayer2()
-            }
+            
         }
     }
 }
