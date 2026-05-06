@@ -1,6 +1,14 @@
+//
+//  SupabaseRealtimeConfig.swift
+//  Supabase Testing
+//
+//  Created by mac on 07/05/2026.
+//
+
+
 import Foundation
 import Network
-import UIKit
+import Starscream
 
 // MARK: - Configuration
 
@@ -11,14 +19,14 @@ public struct SupabaseRealtimeConfig {
     public var reconnectDelay: TimeInterval
     public var maxReconnectAttempts: Int
     public var connectionTimeout: TimeInterval
-    
+
     public init(
         url: String,
         apiKey: String,
         heartbeatInterval: TimeInterval = 15.0,
         reconnectDelay: TimeInterval = 1.0,
         maxReconnectAttempts: Int = Int.max,
-        connectionTimeout: TimeInterval = 60.0
+        connectionTimeout: TimeInterval = 30.0
     ) {
         self.url = url
         self.apiKey = apiKey
@@ -29,11 +37,15 @@ public struct SupabaseRealtimeConfig {
     }
 }
 
-public enum Event: String {
-    case join = "phx_join"
-    case presence = "presence"
+// MARK: - Events
+
+public enum RealtimeEvent: String {
+    case join      = "phx_join"
+    case leave     = "phx_leave"
+    case reply     = "phx_reply"
+    case heartbeat = "heartbeat"
+    case presence  = "presence"
     case broadcast = "broadcast"
-    case move = "move"
 }
 
 // MARK: - Connection State
@@ -43,14 +55,14 @@ public enum ConnectionState: Equatable {
     case connecting
     case connected
     case reconnecting(attempt: Int)
-    
+
     public var isConnected: Bool { self == .connected }
-    
+
     public var description: String {
         switch self {
-        case .disconnected: return "Disconnected"
-        case .connecting: return "Connecting"
-        case .connected: return "Connected"
+        case .disconnected:        return "Disconnected"
+        case .connecting:          return "Connecting"
+        case .connected:           return "Connected"
         case .reconnecting(let n): return "Reconnecting (attempt \(n))"
         }
     }
@@ -63,7 +75,7 @@ public struct PresenceUser: Equatable {
     public let username: String
     public let onlineAt: String
     public let phxRef: String
-    
+
     public var description: String { "\(username) [\(key)]" }
 }
 
@@ -78,7 +90,7 @@ public struct PresenceDiff {
 private struct ChannelRegistration {
     let channelId: String
     let presenceKey: String
-    let presencePayload: [String: Any]
+    let presencePayload: [String: Any]   // clean user metadata only
 }
 
 private struct PendingJoinAck {
@@ -98,67 +110,76 @@ public protocol SupabaseRealtimeClientDelegate: AnyObject {
 
 // MARK: - Client
 
-public final class SupabaseRealtimeClient: NSObject {
-    
-    // MARK: Public Properties
+public final class SupabaseRealtimeClient {
+
+    // MARK: - Public
+
     public private(set) var state: ConnectionState = .disconnected {
         didSet {
             guard state != oldValue else { return }
             log("State → \(state.description)")
             DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.delegate?.client(self, didChangeState: state)
+                guard let self else { return }
+                self.delegate?.client(self, didChangeState: self.state)
             }
         }
     }
-    
+
     public weak var delegate: SupabaseRealtimeClientDelegate?
     public private(set) var presenceState: [String: [PresenceUser]] = [:]
-    
-    // MARK: Private Properties
+
+    // MARK: - Private
+
     private let config: SupabaseRealtimeConfig
-    private var webSocketTask: URLSessionWebSocketTask?
-    private var urlSession: URLSession?
-    private var heartbeatTimer: Timer?
+    private var socket: Starscream.WebSocket?
+
+    // Starscream uses its own internal background queue so all callbacks
+    // arrive off-main — we serialize our own state on a dedicated queue.
+    private let queue = DispatchQueue(label: "com.supabase.realtime.client", qos: .userInitiated)
+
     private var globalRef: Int = 0
+    private var heartbeatTimer: DispatchSourceTimer?   // DispatchSource — no main-thread dependency
+    private var missedHeartbeats: Int = 0
+    private let maxMissedHeartbeats = 3
+
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempts: Int = 0
     private var isIntentionalDisconnect: Bool = false
+    // Guards against the double-reconnect bug (listenForMessages + didCompleteWithError)
+    private var isReconnectScheduled: Bool = false
+
     private var channelRegistry: [String: ChannelRegistration] = [:]
     private var pendingJoinAcks: [String: PendingJoinAck] = [:]
+
     private var networkMonitor: NWPathMonitor?
     private var isNetworkAvailable: Bool = true
-    private var lastHeartbeatTime: Date?
-    private var heartbeatFailureCount: Int = 0
-    private let queue = DispatchQueue(label: "com.supabase.realtime.client", qos: .utility)
-    
-    // MARK: Init
+
+    // MARK: - Init
+
     public init(config: SupabaseRealtimeConfig) {
         self.config = config
-        super.init()
-        setupNetworkMonitoring()
-        setupAppLifecycleObservers()
+        setupNetworkMonitor()
     }
-    
+
     deinit {
         networkMonitor?.cancel()
-        NotificationCenter.default.removeObserver(self)
+        _disconnect(intentional: true)
     }
-    
-    // MARK: - Public Methods
-    
+
+    // MARK: - Public API: Connection
+
     public func connect() {
-        queue.async { [weak self] in
-            self?._connect()
-        }
+        queue.async { [weak self] in self?._connect() }
     }
-    
+
     public func disconnect() {
-        queue.async { [weak self] in
-            self?._disconnect(intentional: true)
-        }
+        queue.async { [weak self] in self?._disconnect(intentional: true) }
     }
-    
+
+    // MARK: - Public API: Channels
+
+    /// Join a channel and track presence.
+    /// Safe to call before connect() — queued and replayed on connect.
     public func joinChannel(
         channelId: String,
         username: String,
@@ -166,597 +187,566 @@ public final class SupabaseRealtimeClient: NSObject {
     ) {
         queue.async { [weak self] in
             guard let self else { return }
-            
-            guard self.channelRegistry[channelId] == nil else {
-                self.log("[\(channelId)] Already registered — skipping duplicate join")
+
+            guard channelRegistry[channelId] == nil else {
+                log("[\(channelId)] Already registered — skipping duplicate join")
                 return
             }
             
-            var payload: [String: Any] = [
-                "type": "presence",
-                "event": "track",  // Add this explicitly
-//                "payload": reg.presencePayload,
-                "key": username,
-                "username": username,
+            let payload: [String: Any] = [
+                "username":  username,
                 "online_at": ISO8601DateFormatter().string(from: Date())
             ]
-            extraPayload.forEach { payload[$0.key] = $0.value }
-            
+            // FIX: presencePayload contains ONLY user metadata (username, online_at, extras).
+            // The track envelope (type, key) is added in _sendPresenceTrack — not here.
+            var userMeta: [String: Any] = [
+                "type": "presence",
+                "event": "track",
+                "payload": payload
+            ]
+            extraPayload.forEach { userMeta[$0.key] = $0.value }
+
             let reg = ChannelRegistration(
-                channelId: channelId,
-                presenceKey: username,
-                presencePayload: payload
+                channelId:       channelId,
+                presenceKey:     username,
+                presencePayload: userMeta
             )
-            
-            self.channelRegistry[channelId] = reg
-            self.presenceState[channelId] = []
-            
-            if self.state.isConnected {
-                self._sendJoin(reg)
+
+            channelRegistry[channelId] = reg
+            presenceState[channelId]   = []
+
+            if state.isConnected {
+                _sendJoin(reg)
             } else {
-                self.log("[\(channelId)] Queued — will join once socket connects")
+                log("[\(channelId)] Queued — will join once socket connects")
             }
         }
     }
-    
+
+    /// Leave a channel permanently. Will not rejoin on reconnect.
     public func leaveChannel(channelId: String) {
         queue.async { [weak self] in
             guard let self else { return }
-            
-            self.channelRegistry.removeValue(forKey: channelId)
-            self.presenceState.removeValue(forKey: channelId)
-            self.pendingJoinAcks = self.pendingJoinAcks.filter { $0.value.channelId != channelId }
-            
-            guard self.state.isConnected else { return }
-            
-            self._send([
-                "topic": self.topic(for: channelId),
-                "event": "phx_leave",
-                "payload": [:],
-                "ref": self.nextRef()
+
+            channelRegistry.removeValue(forKey: channelId)
+            presenceState.removeValue(forKey: channelId)
+            pendingJoinAcks = pendingJoinAcks.filter { $0.value.channelId != channelId }
+
+            guard state.isConnected else { return }
+
+            _send([
+                "topic":   topic(for: channelId),
+                "event":   RealtimeEvent.leave.rawValue,
+                "payload": [String: Any](),
+                "ref":     nextRef()
             ])
-            self.log("[\(channelId)] Left and removed from registry")
+            log("[\(channelId)] Left and removed from registry")
         }
     }
-    
-    public func send(_ payload: [String: Any], completion: ((Error?) -> Void)? = nil) {
-        guard state.isConnected else {
-            completion?(RealtimeError.notConnected)
-            return
-        }
-        
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            guard let data = try? JSONSerialization.data(withJSONObject: payload),
-                  let text = String(data: data, encoding: .utf8) else {
-                completion?(RealtimeError.serializationFailed)
-                return
-            }
-            self.webSocketTask?.send(.string(text)) { error in
-                if let error = error {
-                    self.log("Send error: \(error.localizedDescription)")
-                }
-                completion?(error)
-            }
-        }
-    }
-    
-    public func broadcastMove(x: String, y: String, player: String, channelId: String) {
+
+    // MARK: - Public API: Broadcast
+
+    /// Broadcast any custom event to a channel.
+    public func broadcast(channelId: String, event: String, payload: [String: Any]) {
         queue.async { [weak self] in
             guard let self else { return }
-            
-            let broadcastPayload: [String: Any] = [
-                "topic": self.topic(for: channelId),
-                "event": Event.broadcast.rawValue,
-                "payload": [
-                    "event": Event.move.rawValue,
-                    "payload": [
-                        "player": player,
-                        "x": x,
-                        "y": y
-                    ]
-                ],
-                "ref": self.nextRef()
-            ]
-            
-            if self.state.isConnected {
-                self._send(broadcastPayload)
-            } else {
-                self.log("[\(channelId)] Cannot broadcast - not connected")
+            guard state.isConnected else {
+                log("[\(channelId)] Cannot broadcast — not connected")
+                return
             }
+            _send([
+                "topic":   topic(for: channelId),
+                "event":   RealtimeEvent.broadcast.rawValue,
+                "payload": [
+                    "type":    "broadcast",
+                    "event":   event,
+                    "payload": payload
+                ],
+                "ref": nextRef()
+            ])
         }
     }
-    
-    // MARK: - Private Methods
-    
+
+    /// Broadcast a player move (convenience wrapper).
+    public func broadcastMove(channelId: String, player: String, x: String, y: String) {
+        broadcast(channelId: channelId, event: "move", payload: [
+            "player": player,
+            "x": x,
+            "y": y
+        ])
+    }
+
+    /// Send a raw payload. For advanced use.
+    public func send(_ payload: [String: Any], completion: ((Error?) -> Void)? = nil) {
+        queue.async { [weak self] in
+            guard let self else {
+                completion?(RealtimeError.notConnected)
+                return
+            }
+            guard state.isConnected else {
+                completion?(RealtimeError.notConnected)
+                return
+            }
+            _send(payload)
+            completion?(nil)
+        }
+    }
+
+    // MARK: - Join Sequence
+
+    /// Step 1: send phx_join, register ref in pendingJoinAcks.
     private func _sendJoin(_ reg: ChannelRegistration) {
         let joinRef = nextRef()
+        // Store BEFORE sending so the ack is never missed
         pendingJoinAcks[joinRef] = PendingJoinAck(channelId: reg.channelId, registration: reg)
-        
+
         _send([
-            "topic": topic(for: reg.channelId),
-            "event": Event.join.rawValue,
-            "payload": [
+            "topic":    topic(for: reg.channelId),
+            "event":    RealtimeEvent.join.rawValue,
+            "payload":  [
                 "config": [
-                    "presence": ["enabled": true, "key": reg.presenceKey],
-                    "broadcast": ["self": true, "ack": true]
+                    "presence":  ["key": reg.presenceKey],
+                    "broadcast": ["self": true, "ack": false]
                 ]
             ],
-            "ref": joinRef,
+            "ref":      joinRef,
             "join_ref": joinRef
         ])
         log("[\(reg.channelId)] phx_join sent (ref: \(joinRef))")
     }
-    
+
+    /// Step 2: send presence track — called ONLY after phx_reply {ok} for the join ref.
+    /// FIX: envelope (type, key) is here; presencePayload contains only user metadata.
     private func _sendPresenceTrack(for reg: ChannelRegistration) {
         let trackRef = nextRef()
-        /*
-         // CRITICAL FIX: Supabase expects the presence payload in this exact format
-             let presencePayload: [String: Any] = [
-                 "type": "presence",
-                 "event": "track",  // Add this explicitly
-                 "payload": reg.presencePayload,
-                 "key": reg.presenceKey
-             ]
-             
-             _send([
-                 "topic": topic(for: reg.channelId),
-                 "event": "presence",  // Use string literal, not enum
-                 "payload": presencePayload,
-                 "ref": trackRef
-             ])
-         */
         _send([
-            "topic": topic(for: reg.channelId),
-            "event": Event.presence.rawValue,
+            "topic":   topic(for: reg.channelId),
+            "event":   RealtimeEvent.presence.rawValue,
             "payload": reg.presencePayload,
 //                [
-//                "type": "track",
-//                "key": reg.presenceKey,
-//                "payload": reg.presencePayload
+//                "type":    "track",
+//                "key":     reg.presenceKey,
+//                "payload": reg.presencePayload      // {username, online_at, ...extras}
 //            ],
             "ref": trackRef
         ])
         log("[\(reg.channelId)] presence track sent (ref: \(trackRef))")
-        
     }
-    
+
+    /// Replays all channels after every reconnect.
     private func _rejoinAllChannels() {
         guard !channelRegistry.isEmpty else { return }
         pendingJoinAcks.removeAll()
-        log("Auto-rejoining \(channelRegistry.count) channel(s)...")
-        for reg in channelRegistry.values {
-            _sendJoin(reg)
-        }
+        log("Auto-rejoining \(channelRegistry.count) channel(s)…")
+        for reg in channelRegistry.values { _sendJoin(reg) }
     }
-    
+
+    // MARK: - Low-Level Send
+
     private func _send(_ payload: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let text = String(data: data, encoding: .utf8) else { return }
-        webSocketTask?.send(.string(text)) { [weak self] error in
-            if let error = error {
-                self?.log("Send error: \(error.localizedDescription)")
-            }
+              let text = String(data: data, encoding: .utf8) else {
+            log("Serialization failed: \(payload)")
+            return
         }
+        // Starscream's write() is thread-safe
+        socket?.write(string: text)
     }
-    
+
     private func nextRef() -> String {
         globalRef += 1
         return "\(globalRef)"
     }
-    
+
     private func topic(for channelId: String) -> String {
-        return "realtime:\(channelId)"
+        "realtime:\(channelId)"
     }
-    
+
     private func channelId(from topic: String) -> String {
         guard topic.hasPrefix("realtime:") else { return topic }
         return String(topic.dropFirst("realtime:".count))
     }
-    
-    // MARK: - Connection Management
-    
+
+    // MARK: - Connect / Disconnect
+
     private func _connect() {
-        guard !state.isConnected && state != .connecting else {
+        guard state == .disconnected || state == .reconnecting(attempt: reconnectAttempts) else {
             log("Already \(state.description) — ignoring connect()")
             return
         }
-        
-        isIntentionalDisconnect = false
-        reconnectAttempts = 0
+
+        guard isNetworkAvailable else {
+            log("No network — will connect when network returns")
+            return
+        }
+
+        isIntentionalDisconnect  = false
+        isReconnectScheduled     = false
         state = .connecting
-        
+
         guard let url = buildWebSocketURL() else {
             log("Invalid WebSocket URL")
             state = .disconnected
             return
         }
-        
-        let configuration = URLSessionConfiguration.default
-        configuration.waitsForConnectivity = true
-        configuration.timeoutIntervalForRequest = config.connectionTimeout
-        configuration.timeoutIntervalForResource = config.connectionTimeout * 2
-        
-        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: .main)
-        urlSession = session
-        
-        var request = URLRequest(url: url, timeoutInterval: config.connectionTimeout)
-        request.setValue(config.apiKey, forHTTPHeaderField: "apikey")
-        request.setValue("keep-alive", forHTTPHeaderField: "Connection")
-        
-        let task = session.webSocketTask(with: request)
-        webSocketTask = task
-        task.resume()
-        
-        listenForMessages()
-        log("WebSocket connecting → \(url.absoluteString)")
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = config.connectionTimeout
+        request.setValue(config.apiKey,             forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("websocket",               forHTTPHeaderField: "Upgrade")
+        request.setValue("keep-alive",              forHTTPHeaderField: "Connection")
+
+        let ws = WebSocket(request: request)
+        // Starscream calls delegate on its own background callbackQueue
+        ws.callbackQueue = queue
+        ws.delegate = self
+        socket = ws
+        ws.connect()
+
+        log("Starscream connecting → \(url.absoluteString)")
     }
-    
+
     private func _disconnect(intentional: Bool) {
         isIntentionalDisconnect = intentional
+        isReconnectScheduled    = false
+
         stopHeartbeat()
         reconnectTask?.cancel()
-        reconnectTask = nil
+        reconnectTask     = nil
         reconnectAttempts = 0
         pendingJoinAcks.removeAll()
-        
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
-        webSocketTask = nil
-        urlSession?.invalidateAndCancel()
-        urlSession = nil
-        
+
+        socket?.disconnect()
+        socket = nil
+
         presenceState = presenceState.mapValues { _ in [] }
         state = .disconnected
-        log("Disconnected\(intentional ? " (intentional)" : "")")
+        log("Disconnected\(intentional ? " (intentional)" : " (unexpected)")")
     }
-    
+
     // MARK: - Message Handling
-    
-    private func listenForMessages() {
-        webSocketTask?.receive { [weak self] result in
-            guard let self = self else { return }
-            
-            switch result {
-            case .success(let message):
-                self.handleIncoming(message)
-                if !self.isIntentionalDisconnect {
-                    self.listenForMessages()
-                }
-            case .failure(let error):
-                self.log("Receive error: \(error.localizedDescription)")
-                if !self.isIntentionalDisconnect {
-                    self.scheduleReconnect()
-                }
-            }
-        }
-    }
-    
-    private func handleIncoming(_ message: URLSessionWebSocketTask.Message) {
-        var text: String?
-        switch message {
-        case .string(let s):
-            text = s
-        case .data(let d):
-            text = String(data: d, encoding: .utf8)
-        @unknown default:
-            break
-        }
-        
-        guard let raw = text,
-              let data = raw.data(using: .utf8),
+
+    private func handleText(_ text: String) {
+        guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            log("Could not parse incoming message")
+            log("Parse failed: \(text)")
             return
         }
-        
-        let event = json["event"] as? String ?? ""
-        let topic = json["topic"] as? String ?? ""
-        let payload = json["payload"] as? [String: Any] ?? [:]
-        let ref = json["ref"] as? String ?? ""
+
+        let event     = json["event"]   as? String ?? ""
+        let topic     = json["topic"]   as? String ?? ""
+        let payload   = json["payload"] as? [String: Any] ?? [:]
+        let ref       = json["ref"]     as? String ?? ""
         let channelId = self.channelId(from: topic)
+
+        if topic != "phoenix" {
+            print(json)
+        }
+//        log("◀ event=\(event) channel=\(channelId) ref=\(ref)")
         
         switch event {
-        case "phx_reply":
-            if topic == "phoenix" {
-                lastHeartbeatTime = Date()
-                heartbeatFailureCount = 0
-                log("Heartbeat ack ✓")
+
+        case RealtimeEvent.reply.rawValue:
+            guard topic != "phoenix" else {
+                // Heartbeat ack — reset miss counter
+                missedHeartbeats = 0
+//                log("Heartbeat ack ✓")
                 return
             }
-            
+
             let status = payload["status"] as? String ?? ""
-            if let pending = pendingJoinAcks.removeValue(forKey: ref), status == "ok" {
-                log("[\(pending.channelId)] Join confirmed ✓")
-                _sendPresenceTrack(for: pending.registration)
+
+            // FIX: presence track fires ONLY here — after confirmed join ack.
+            if let pending = pendingJoinAcks.removeValue(forKey: ref) {
+                if status == "ok" {
+                    log("[\(pending.channelId)] Join confirmed ✓ — tracking presence now")
+                    _sendPresenceTrack(for: pending.registration)
+                } else {
+                    log("[\(pending.channelId)] Join failed — status: \(status)")
+                }
             }
-            
-            /*
-             let presencePayload: [String: Any] = [
-                 "type": "presence",
-                 "event": "track",  // Add this explicitly
-                 "payload": reg.presencePayload,
-                 "key": reg.presenceKey
-             ]
-             */
-            
+
         case "presence_state":
+//            print(json)
             handlePresenceState(channelId: channelId, raw: payload)
-            
+
         case "presence_diff":
+//            print(json)
             handlePresenceDiff(channelId: channelId, raw: payload)
-            
+
         default:
             DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
+                guard let self else { return }
                 self.delegate?.client(self, didReceiveMessage: json)
             }
         }
     }
-    
+
     // MARK: - Presence Handlers
-    
+
     private func handlePresenceState(channelId: String, raw: [String: Any]) {
         let users = parsePresenceMap(raw)
         presenceState[channelId] = users
-        
+        log("[\(channelId)] presence_state → \(users.map(\.description).joined(separator: ", "))")
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+            guard let self else { return }
             self.delegate?.client(self, channel: channelId, didReceivePresenceState: users)
         }
     }
-    
+
     private func handlePresenceDiff(channelId: String, raw: [String: Any]) {
-        let joins = parsePresenceMap(raw["joins"] as? [String: Any] ?? [:])
+        let joins  = parsePresenceMap(raw["joins"]  as? [String: Any] ?? [:])
         let leaves = parsePresenceMap(raw["leaves"] as? [String: Any] ?? [:])
-        
+
         var current = presenceState[channelId] ?? []
-        let leaveRefs = Set(leaves.map { $0.phxRef })
+        let leaveRefs = Set(leaves.map(\.phxRef))
         current.removeAll { leaveRefs.contains($0.phxRef) }
-        
-        let existingRefs = Set(current.map { $0.phxRef })
+
+        let existingRefs = Set(current.map(\.phxRef))
         current.append(contentsOf: joins.filter { !existingRefs.contains($0.phxRef) })
         presenceState[channelId] = current
-        
+
+        if !joins.isEmpty  { log("[\(channelId)] +joined: \(joins.map(\.description).joined(separator: ", "))") }
+        if !leaves.isEmpty { log("[\(channelId)] -left:   \(leaves.map(\.description).joined(separator: ", "))") }
+
         let diff = PresenceDiff(channelId: channelId, joins: joins, leaves: leaves)
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+            guard let self else { return }
             self.delegate?.client(self, didReceivePresenceDiff: diff)
         }
     }
-    
+
     private func parsePresenceMap(_ map: [String: Any]) -> [PresenceUser] {
-        return map.compactMap { key, value -> PresenceUser? in
+        map.compactMap { key, value -> PresenceUser? in
             guard let entry = value as? [String: Any],
                   let metas = entry["metas"] as? [[String: Any]],
-                  let meta = metas.first else { return nil }
+                  let meta  = metas.first else { return nil }
             return PresenceUser(
-                key: key,
-                username: meta["username"] as? String ?? key,
+                key:      key,
+                username: meta["username"]  as? String ?? key,
                 onlineAt: meta["online_at"] as? String ?? "",
-                phxRef: meta["phx_ref"] as? String ?? ""
+                phxRef:   meta["phx_ref"]   as? String ?? ""
             )
         }
     }
-    
+
     // MARK: - Heartbeat
-    
+    // FIX: Uses DispatchSourceTimer instead of Timer — no main thread dependency.
+    // FIX: Tracks missed heartbeats instead of spawning new closures every interval.
+
     private func startHeartbeat() {
         stopHeartbeat()
+        missedHeartbeats = 0
         log("Heartbeat started (every \(config.heartbeatInterval)s)")
-        
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.heartbeatTimer = Timer.scheduledTimer(
-                withTimeInterval: self.config.heartbeatInterval,
-                repeats: true
-            ) { [weak self] _ in
-                self?.sendHeartbeat()
-            }
-        }
+
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + config.heartbeatInterval,
+                       repeating: config.heartbeatInterval)
+        timer.setEventHandler { [weak self] in self?.sendHeartbeat() }
+        timer.resume()
+        heartbeatTimer = timer
     }
-    
+
     private func stopHeartbeat() {
-        DispatchQueue.main.async { [weak self] in
-            self?.heartbeatTimer?.invalidate()
-            self?.heartbeatTimer = nil
-        }
+        heartbeatTimer?.cancel()
+        heartbeatTimer = nil
     }
-    
+
     private func sendHeartbeat() {
         guard state.isConnected else { return }
-        
+
+        // FIX: increment miss count BEFORE sending.
+        // Ack handler resets it. If it reaches max, connection is dead.
+        missedHeartbeats += 1
+        if missedHeartbeats >= maxMissedHeartbeats {
+            log("Heartbeat timeout (\(missedHeartbeats) missed) — forcing reconnect")
+            _disconnect(intentional: false)
+            scheduleReconnect()
+            return
+        }
+
         let ref = nextRef()
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            self._send([
-                "topic": "phoenix",
-                "event": "heartbeat",
-                "payload": [:],
-                "ref": ref
-            ])
-            self.log("Heartbeat sent (ref: \(ref))")
-        }
-        
-        // Check for heartbeat timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
-            if let lastTime = self?.lastHeartbeatTime,
-               Date().timeIntervalSince(lastTime) > self?.config.heartbeatInterval ?? 15 {
-                self?.heartbeatFailureCount += 1
-                if self?.heartbeatFailureCount ?? 0 >= 3 {
-                    self?.log("Heartbeat timeout, forcing reconnect")
-                    self?.forceReconnect()
-                }
-            }
-        }
+        _send([
+            "topic":   "phoenix",
+            "event":   RealtimeEvent.heartbeat.rawValue,
+            "payload": [String: Any](),
+            "ref":     ref
+        ])
+        log("Heartbeat sent (ref: \(ref), missed: \(missedHeartbeats))")
     }
-    
-    private func forceReconnect() {
-        queue.async { [weak self] in
-            self?._disconnect(intentional: false)
-            self?.scheduleReconnect()
-        }
-    }
-    
-    // MARK: - Reconnect Logic
-    
+
+    // MARK: - Reconnect
+    // FIX: isReconnectScheduled prevents double-reconnect from Starscream
+    // onDisconnect + receive failure both firing for the same drop.
+
     private func scheduleReconnect() {
         guard !isIntentionalDisconnect else { return }
-        
+        guard !isReconnectScheduled    else {
+            log("Reconnect already scheduled — skipping duplicate")
+            return
+        }
+
         if reconnectAttempts >= config.maxReconnectAttempts {
-            log("Max reconnect attempts reached")
+            log("Max reconnect attempts reached — giving up")
             state = .disconnected
             return
         }
-        
-        reconnectAttempts += 1
+
+        isReconnectScheduled = true
+        reconnectAttempts   += 1
         state = .reconnecting(attempt: reconnectAttempts)
-        
-        let delay = min(config.reconnectDelay * Double(reconnectAttempts), 30)
-        log("Will reconnect in \(delay)s (attempt \(reconnectAttempts))")
-        
+
+        // Exponential back-off capped at 30s
+        let delay = min(config.reconnectDelay * pow(2.0, Double(reconnectAttempts - 1)), 30.0)
+        log("Reconnecting in \(String(format: "%.1f", delay))s (attempt \(reconnectAttempts))")
+
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?._connect()
-            }
+            self?.queue.async { self?._connect() }
         }
     }
-    
-    // MARK: - Network Monitoring
-    
-    private func setupNetworkMonitoring() {
-        networkMonitor = NWPathMonitor()
-        networkMonitor?.pathUpdateHandler = { [weak self] path in
-            let wasAvailable = self?.isNetworkAvailable ?? false
-            let isAvailable = path.status == .satisfied
-            self?.isNetworkAvailable = isAvailable
-            
+
+    // MARK: - Network Monitor
+    // FIX: guard against triggering connect() when already connected/connecting.
+
+    private func setupNetworkMonitor() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            let wasAvailable = isNetworkAvailable
+            let isAvailable  = path.status == .satisfied
+            isNetworkAvailable = isAvailable
+
             if !wasAvailable && isAvailable {
-                self?.log("Network recovered, reconnecting...")
-                self?.connect()
+                log("Network recovered")
+                queue.async {
+                    guard !self.state.isConnected && self.state != .connecting && !self.isIntentionalDisconnect else { return }
+                    self._connect()
+                }
             } else if wasAvailable && !isAvailable {
-                self?.log("Network lost")
+                log("Network lost")
             }
         }
-        networkMonitor?.start(queue: .main)
+        monitor.start(queue: DispatchQueue(label: "com.supabase.realtime.network"))
+        networkMonitor = monitor
     }
-    
-    // MARK: - App Lifecycle
-    
-    private func setupAppLifecycleObservers() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(appDidEnterBackground),
-            name: UIApplication.didEnterBackgroundNotification,
-            object: nil
-        )
-        
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(appWillEnterForeground),
-            name: UIApplication.willEnterForegroundNotification,
-            object: nil
-        )
-    }
-    
-    @objc private func appDidEnterBackground() {
-        stopHeartbeat()
-    }
-    
-    @objc private func appWillEnterForeground() {
-        if !state.isConnected && !isIntentionalDisconnect {
-            connect()
-        } else {
-            startHeartbeat()
-        }
-    }
-    
-    // MARK: - URL Building
-    
+
+    // MARK: - URL Builder
+
     private func buildWebSocketURL() -> URL? {
         var base = config.url
             .replacingOccurrences(of: "https://", with: "wss://")
-            .replacingOccurrences(of: "http://", with: "ws://")
-        if base.hasSuffix("/") {
-            base = String(base.dropLast())
+            .replacingOccurrences(of: "http://",  with: "ws://")
+        if base.hasSuffix("/") { base = String(base.dropLast()) }
+
+        var components = "\(base)/realtime/v1/websocket?apikey=\(config.apiKey)&vsn=1.0.0"
+
+        // Append access token if present
+        if let token = UserDefaults.standard.string(forKey: "access_token") {
+            components += "&access_token=\(token)"
         }
-        
-        var urlString = "\(base)/realtime/v1/websocket?apikey=\(config.apiKey)&vsn=1.0.0"
-        
-        if let jwtToken = UserDefaults.standard.string(forKey: "access_token") {
-            urlString += "&access_token=\(jwtToken)"
-        }
-        
-        return URL(string: urlString)
+
+        return URL(string: components)
     }
-    
+
     // MARK: - Logging
-    
+
     private func log(_ message: String) {
         print("[SupabaseRealtime] \(message)")
     }
 }
 
-// MARK: - URLSessionWebSocketDelegate
+// MARK: - Starscream WebSocketDelegate
 
-extension SupabaseRealtimeClient: URLSessionWebSocketDelegate {
-    
-    public func urlSession(
-        _ session: URLSession,
-        webSocketTask: URLSessionWebSocketTask,
-        didOpenWithProtocol protocol: String?
-    ) {
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            self.reconnectAttempts = 0
-            self.state = .connected
-            self.lastHeartbeatTime = Date()
-            self.heartbeatFailureCount = 0
-            self.startHeartbeat()
-            self._rejoinAllChannels()
-        }
-    }
-    
-    public func urlSession(
-        _ session: URLSession,
-        webSocketTask: URLSessionWebSocketTask,
-        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
-        reason: Data?
-    ) {
-        let reasonString = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "none"
-        log("Socket closed — code: \(closeCode.rawValue), reason: \(reasonString)")
-        
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            self.stopHeartbeat()
-            
-            if !self.isIntentionalDisconnect {
-                self.scheduleReconnect()
-            } else {
-                self.state = .disconnected
+extension SupabaseRealtimeClient: WebSocketDelegate {
+
+    public func didReceive(event: WebSocketEvent, client: WebSocketClient) {
+        // All events arrive on self.queue (set via ws.callbackQueue = queue)
+        switch event {
+
+        case .connected(let headers):
+            log("Socket connected — headers: \(headers)")
+            reconnectAttempts    = 0
+            isReconnectScheduled = false
+            state = .connected
+            startHeartbeat()
+            _rejoinAllChannels()
+
+        case .disconnected(let reason, let code):
+            log("Socket disconnected — code: \(code), reason: \(reason)")
+            stopHeartbeat()
+            if !isIntentionalDisconnect { scheduleReconnect() }
+            else { state = .disconnected }
+
+        case .text(let text):
+            handleText(text)
+
+        case .binary(let data):
+            if let text = String(data: data, encoding: .utf8) { handleText(text) }
+
+        case .error(let error):
+            let msg = error?.localizedDescription ?? "unknown error"
+            log("Socket error: \(msg)")
+            stopHeartbeat()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if let error { self.delegate?.client(self, didFailWithError: error) }
             }
+            if !isIntentionalDisconnect { scheduleReconnect() }
+
+        case .cancelled:
+            log("Socket cancelled")
+            stopHeartbeat()
+            state = .disconnected
+            
+        case .ping:
+            log("Ping")
+            
+        case .pong:
+            log("Pong")
+
+        case .viabilityChanged(let isViable):
+            log("Socket viability changed: \(isViable)")
+            if !isViable && !isIntentionalDisconnect { scheduleReconnect() }
+
+        case .reconnectSuggested(let suggested):
+            log("Reconnect suggested: \(suggested)")
+            if suggested && !isIntentionalDisconnect {
+                _disconnect(intentional: false)
+                scheduleReconnect()
+            }
+        case .peerClosed:
+            log("Peer closed")
+            stopHeartbeat()
+            scheduleReconnect()
         }
     }
-    
-    public func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        didCompleteWithError error: Error?
-    ) {
-        if let error = error {
-            log("Task error: \(error.localizedDescription)")
-            
-            queue.async { [weak self] in
-                guard let self = self else { return }
-                self.stopHeartbeat()
-                DispatchQueue.main.async {
-                    self.delegate?.client(self, didFailWithError: error)
-                }
-                
-                if !self.isIntentionalDisconnect {
-                    self.scheduleReconnect()
-                }
+}
+
+// MARK: - App Lifecycle (call from AppDelegate / SceneDelegate)
+
+extension SupabaseRealtimeClient {
+
+    /// Call from AppDelegate.applicationDidEnterBackground or SceneDelegate equivalent.
+    public func handleAppBackground() {
+        queue.async { [weak self] in
+            self?.stopHeartbeat()
+            self?.log("App backgrounded — heartbeat paused")
+        }
+    }
+
+    /// Call from AppDelegate.applicationWillEnterForeground or SceneDelegate equivalent.
+    public func handleAppForeground() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if state.isConnected {
+                startHeartbeat()
+                log("App foregrounded — heartbeat resumed")
+            } else if !isIntentionalDisconnect {
+                log("App foregrounded — reconnecting")
+                _connect()
             }
         }
     }
@@ -767,13 +757,11 @@ extension SupabaseRealtimeClient: URLSessionWebSocketDelegate {
 public enum RealtimeError: LocalizedError {
     case notConnected
     case serializationFailed
-    
+
     public var errorDescription: String? {
         switch self {
-        case .notConnected:
-            return "WebSocket is not connected"
-        case .serializationFailed:
-            return "Failed to serialize message"
+        case .notConnected:        return "WebSocket is not connected."
+        case .serializationFailed: return "Failed to serialize message payload."
         }
     }
 }

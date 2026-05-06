@@ -29,6 +29,9 @@ struct GameStatusView: View {
                         viewModel.connect()
                     }
                 }
+                Button("Join") {
+                    viewModel.joinRoom(playerName: viewModel.playerName)
+                }
             }
             .padding()
 

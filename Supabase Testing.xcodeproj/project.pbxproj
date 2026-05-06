@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		047B25572FABE7CE009F6474 /* Starscream in Frameworks */ = {isa = PBXBuildFile; productRef = 047B25562FABE7CE009F6474 /* Starscream */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		044872AB2FA6143D007EAD5B /* Supabase Testing.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Supabase Testing.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				047B25572FABE7CE009F6474 /* Starscream in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -73,6 +78,7 @@
 			);
 			name = "Supabase Testing";
 			packageProductDependencies = (
+				047B25562FABE7CE009F6474 /* Starscream */,
 			);
 			productName = "Supabase Testing";
 			productReference = 044872AB2FA6143D007EAD5B /* Supabase Testing.app */;
@@ -103,6 +109,7 @@
 			mainGroup = 044872A22FA6143D007EAD5B;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				047B25552FABE7CE009F6474 /* XCRemoteSwiftPackageReference "Starscream" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 044872AC2FA6143D007EAD5B /* Products */;
@@ -360,6 +367,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		047B25552FABE7CE009F6474 /* XCRemoteSwiftPackageReference "Starscream" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/daltoniam/Starscream.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 4.0.8;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		047B25562FABE7CE009F6474 /* Starscream */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 047B25552FABE7CE009F6474 /* XCRemoteSwiftPackageReference "Starscream" */;
+			productName = Starscream;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 044872A32FA6143D007EAD5B /* Project object */;
 }

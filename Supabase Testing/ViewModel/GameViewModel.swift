@@ -26,11 +26,12 @@ class GameViewModel: ObservableObject {
     // MARK: - Private Properties
     private let realtimeClient: SupabaseRealtimeClient
     private var cancellables = Set<AnyCancellable>()
+//    private let starscreamClient: SupabaseRealtimeSocketManager
     
     // MARK: - Initialization
     init(realtimeClient: SupabaseRealtimeClient = SupabaseRealtimeClient(config: SupabaseRealtimeConfig(url: "https://eilxfocmlnzsjkrgbvvv.supabase.co", apiKey: "sb_publishable_PhNhE083zZ3FMjOBbsxeXw_wMT6k8-o"))) {
         self.realtimeClient = realtimeClient
-        
+//        starscreamClient = SupabaseRealtimeSocketManager()
     }
     
     // MARK: - Public Methods
@@ -39,6 +40,7 @@ class GameViewModel: ObservableObject {
             realtimeClient.delegate = self
         }
         realtimeClient.connect()
+//        starscreamClient.connect()
     }
     
     func disconnect() {
@@ -47,17 +49,17 @@ class GameViewModel: ObservableObject {
         roomId = ""
     }
     
-    func joinRoom(playerName: String) async {
+    func joinRoom(playerName: String) {
         realtimeClient.joinChannel(channelId: "1234", username: playerName)
         self.playerName = playerName
     }
     
-    func leaveRoom() async {
+    func leaveRoom() {
         realtimeClient.leaveChannel(channelId: "1234")
     }
     
     func sendMessage(x: String, y: String) {
-        realtimeClient.broadcastMove(x: x, y: y, player: playerName, channelId: "1234")
+        realtimeClient.broadcastMove(channelId: "1234", player: playerName, x: x, y: y)
     }
 }
 
