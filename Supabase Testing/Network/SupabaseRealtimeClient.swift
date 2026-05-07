@@ -120,7 +120,7 @@ public final class SupabaseRealtimeClient {
             log("State → \(state.description)")
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.delegate?.client(self, didChangeState: self.state)
+                self.delegate?.client(self, didChangeState: state)
             }
         }
     }

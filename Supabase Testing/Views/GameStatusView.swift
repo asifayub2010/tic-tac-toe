@@ -9,59 +9,119 @@
 import SwiftUI
 
 struct GameStatusView: View {
-    @StateObject var viewModel = GameViewModel()
-    @State private var playerName: String = ""
-    @State private var players: [String] = ["Player1", "Player2"]
-    @State private var lastMessage: String = "No message yet"
-    @State private var xMove: String = "\(Int.random(in: 0...8))"
-    @State private var yMove: String = "\(Int.random(in: 0...8))"
+    @StateObject private var viewModel: GameViewModel
+    
+    init(currentPlayerName: String) {
+        _viewModel = StateObject(
+            wrappedValue: GameViewModel(playerName: currentPlayerName)
+        )
+    }
 
     var body: some View {
-        VStack {
+        VStack(spacing: 16) {
+            Text("Lobby")
+                .font(.largeTitle.bold())
+            
+            Text("Player: \(viewModel.playerName)")
+                .font(.headline)
+            
             HStack {
-                TextField("Enter name", text: $viewModel.playerName)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-
-                Button(viewModel.connectionStatus) {
+                Text(viewModel.connectionStatus)
+                    .foregroundStyle(viewModel.isConnected ? .green : .red)
+                
+                Spacer()
+                
+                Button(viewModel.isConnected ? "Disconnect" : "Connect") {
                     if viewModel.isConnected {
                         viewModel.disconnect()
                     } else {
                         viewModel.connect()
                     }
                 }
-                Button("Join") {
-                    viewModel.joinRoom(playerName: viewModel.playerName)
-                }
             }
-            .padding()
-
-            Divider()
-
-            ForEach(viewModel.users, id: \.self) { player in
-                Text("-----\(player)-----")
-            }
-
-            Divider()
-
-            Text(viewModel.messageText)
-                .padding()
-            Divider()
+            
             HStack {
-                VStack {
-                    TextField("X Move", text: $xMove)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                    
-                    TextField("Y Move", text: $yMove)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                Button("Join Lobby") {
+                    viewModel.joinLobby()
                 }
-
-                Button("Play Move") {
-                    viewModel.sendMessage(x: xMove, y: yMove)
-                    xMove = "\(Int.random(in: 0...8))"
-                    yMove = "\(Int.random(in: 0...8))"
+                .disabled(!viewModel.isConnected || viewModel.activeGameRoomId != nil)
+                
+                Spacer()
+                
+                if viewModel.activeGameRoomId != nil {
+                    Button("Leave Game Room") {
+                        viewModel.leaveGameRoom()
+                    }
                 }
             }
+            
+            Divider()
+            
+            Text("Online Players \(viewModel.onlinePlayers.joined(separator: ", "))")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            
+            List(viewModel.onlinePlayers, id: \.self) { player in
+                HStack {
+                    Text(player)
+                        .onAppear {
+                            print("player joined: ", player)
+                        }
+                    Spacer()
+                    if viewModel.selectedPlayer == player {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.blue)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    viewModel.selectedPlayer = player
+                }
+            }
+            .frame(maxHeight: 260)
+
+            Button("Invite Selected Player") {
+                viewModel.sendInvite()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(viewModel.selectedPlayer == nil || viewModel.activeGameRoomId != nil)
+            
+            if let pendingInviteTo = viewModel.pendingInviteTo {
+                Text("Waiting for \(pendingInviteTo) to respond...")
+                    .font(.subheadline)
+            }
+            
+            if let incomingInviteFrom = viewModel.incomingInviteFrom {
+                VStack(spacing: 8) {
+                    Text("\(incomingInviteFrom) invited you to play.")
+                        .font(.headline)
+                    HStack {
+                        Button("Reject") {
+                            viewModel.rejectInvite()
+                        }
+                        .buttonStyle(.bordered)
+                        
+                        Button("Accept") {
+                            viewModel.acceptInvite()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+            
+            if let roomId = viewModel.activeGameRoomId {
+                Text("Game room: \(roomId)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            
+            Text(viewModel.systemMessage)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding()
+        .navigationTitle("Game Lobby")
+//        .navigationBarTitleDisplayMode(.inline)
     }
 }

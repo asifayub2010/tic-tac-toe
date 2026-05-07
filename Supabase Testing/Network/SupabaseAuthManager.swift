@@ -150,15 +150,25 @@ class SupabaseAuthManager {
         UserDefaults.standard.set(response.accessToken, forKey: "access_token")
         UserDefaults.standard.set(response.refreshToken, forKey: "refresh_token")
         UserDefaults.standard.set(response.user?.id, forKey: "user_id")
+        UserDefaults.standard.set(response.user?.email, forKey: "user_email")
     }
     
     private func clearSession() {
         UserDefaults.standard.removeObject(forKey: "access_token")
         UserDefaults.standard.removeObject(forKey: "refresh_token")
         UserDefaults.standard.removeObject(forKey: "user_id")
+        UserDefaults.standard.removeObject(forKey: "user_email")
     }
     
     var isLoggedIn: Bool {
         UserDefaults.standard.string(forKey: "access_token") != nil
+    }
+    
+    var currentUsername: String {
+        UserDefaults.standard.string(forKey: "player_username") ?? ""
+    }
+    
+    func saveUsername(_ username: String) {
+        UserDefaults.standard.set(username, forKey: "player_username")
     }
 }

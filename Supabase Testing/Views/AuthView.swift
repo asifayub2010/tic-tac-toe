@@ -11,8 +11,9 @@ import SwiftUI
 
 struct AuthView: View {
     
-    @State private var email = "asifayub2010@gmail.com"
-    @State private var password = "Abcd@1234"
+    @State private var email = ""
+    @State private var password = ""
+    @State private var username = ""
     @State private var isLogin = true
     @State private var userLoginState = false
     @State private var isLoading = false
@@ -27,6 +28,10 @@ struct AuthView: View {
                     .fontWeight(.bold)
                 
                 VStack(spacing: 20) {
+                    TextField("Username", text: $username)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                    
                     TextField("Email", text: $email)
                         .textFieldStyle(.roundedBorder)
 //                        .textInputAutocapitalization(.never)
@@ -73,10 +78,13 @@ struct AuthView: View {
                 Spacer()
             }
             .navigationDestination(isPresented: $userLoginState) {
-                GameStatusView()
+                GameStatusView(currentPlayerName: username)
             }
             .padding()
             .navigationTitle("Authentication")
+            .onAppear {
+                username = SupabaseAuthManager.shared.currentUsername
+            }
             .alert("Success", isPresented: $showSuccess) {
                 Button("OK") {
                     // Navigate to main app
@@ -88,6 +96,21 @@ struct AuthView: View {
     }
     
     private func authenticate() async {
+        guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            errorMessage = "Please enter a username."
+            return
+        }
+        
+        guard !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            errorMessage = "Please enter your email."
+            return
+        }
+        
+        guard !password.isEmpty else {
+            errorMessage = "Please enter your password."
+            return
+        }
+        
         isLoading = true
         errorMessage = nil
         
@@ -97,12 +120,9 @@ struct AuthView: View {
                 userLoginState = true
             } else {
                 _ = try await SupabaseAuthManager.shared.signUp(email: email, password: password)
+                userLoginState = true
             }
-            
-            
-            
-            
-            
+            SupabaseAuthManager.shared.saveUsername(username.trimmingCharacters(in: .whitespacesAndNewlines))
             showSuccess = true
         } catch let error as SupabaseError {
             errorMessage = error.message
