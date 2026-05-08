@@ -20,7 +20,7 @@ class GameViewModel: ObservableObject {
     @Published var playerName: String
     @Published var connectionStatus: String = "Disconnected"
     @Published var isConnected = false
-    @Published var onlinePlayers: [String] = []
+    @Published var onlinePlayers: Set<String> = []
     @Published var selectedPlayer: String?
     @Published var incomingInviteFrom: String?
     @Published var pendingInviteTo: String?
@@ -251,7 +251,7 @@ extension GameViewModel: SupabaseRealtimeClientDelegate {
             }
             
             let names = users.map(\.username).filter { $0 != self.playerName }.sorted()
-            self.onlinePlayers = names
+            names.forEach({self.onlinePlayers.insert($0)})
             if let selectedPlayer, !names.contains(selectedPlayer) {
                 self.selectedPlayer = nil
             }
@@ -268,11 +268,15 @@ extension GameViewModel: SupabaseRealtimeClientDelegate {
                 return
             }
             
-            let names = diff.joins.map({$0.username})
+            let joinedUsers = diff.joins.map({$0.username})
                 .filter { $0 != self.playerName }
                 .sorted()
-            self.onlinePlayers = names
-            if let selectedPlayer, !names.contains(selectedPlayer) {
+            joinedUsers.forEach({self.onlinePlayers.insert($0)})
+            
+            let leftUsers = diff.leaves.map({$0.username})
+                .sorted()
+            leftUsers.forEach({self.onlinePlayers.remove($0)})
+            if let selectedPlayer, leftUsers.contains(selectedPlayer) {
                 self.selectedPlayer = nil
             }
         }

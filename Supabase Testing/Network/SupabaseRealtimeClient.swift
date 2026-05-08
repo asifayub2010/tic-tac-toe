@@ -305,8 +305,8 @@ public final class SupabaseRealtimeClient {
             "event":    RealtimeEvent.join.rawValue,
             "payload":  [
                 "config": [
-                    "presence":  ["key": reg.presenceKey],
-                    "broadcast": ["self": true, "ack": false]
+                    "presence":  ["key": reg.presenceKey, "enabled": true],
+                    "broadcast": ["self": true, "ack": true]
                 ]
             ],
             "ref":      joinRef,
