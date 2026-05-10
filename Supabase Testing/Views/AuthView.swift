@@ -5,7 +5,6 @@
 //  Created by mac on 05/05/2026.
 //
 
-
 // Authentication service
 import SwiftUI
 
@@ -87,7 +86,9 @@ struct AuthView: View {
             }
             .alert("Success", isPresented: $showSuccess) {
                 Button("OK") {
-                    // Navigate to main app
+                    DispatchQueue.main.async {
+                        userLoginState = true
+                    }
                 }
             } message: {
                 Text(isLogin ? "Logged in successfully!" : "Account created successfully!")
@@ -117,10 +118,11 @@ struct AuthView: View {
         do {
             if isLogin {
                 _ = try await SupabaseAuthManager.shared.signIn(email: email, password: password)
-                userLoginState = true
             } else {
                 _ = try await SupabaseAuthManager.shared.signUp(email: email, password: password)
-                userLoginState = true
+//                DispatchQueue.main.async {
+//                    userLoginState = true
+//                }
             }
             SupabaseAuthManager.shared.saveUsername(username.trimmingCharacters(in: .whitespacesAndNewlines))
             showSuccess = true
@@ -133,3 +135,4 @@ struct AuthView: View {
         isLoading = false
     }
 }//SupabaseAuthManager.shared.isLoggedIn
+

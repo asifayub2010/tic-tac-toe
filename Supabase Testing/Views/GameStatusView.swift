@@ -1,5 +1,5 @@
 //
-//  ContentView 2.swift
+//  ContentView.swift
 //  Supabase Testing
 //
 //  Created by mac on 05/05/2026.
@@ -61,7 +61,7 @@ struct GameStatusView: View {
                 .font(.headline)
                 .frame(maxWidth: .infinity, alignment: .leading)
             
-            List(viewModel.onlinePlayers, id: \.self) { player in
+            List(Array(viewModel.onlinePlayers), id: \.self) { player in
                 HStack {
                     Text(player)
                         .onAppear {
@@ -113,6 +113,21 @@ struct GameStatusView: View {
                 Text("Game room: \(roomId)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                
+                NavigationLink("Enter Game", destination: {
+                    let vm = GameViewModelNew()
+                    // Determine my player type: host is X, guest is O
+                    let amHost = viewModel.isHostForActiveGame ?? false
+                    let myPlayer: Player = amHost ? .x : .o
+                    let names: [Player: String] = [
+                        .x: amHost ? viewModel.playerName : (viewModel.opponentName ?? "Player X"),
+                        .o: amHost ? (viewModel.opponentName ?? "Player O") : viewModel.playerName,
+                        .y: "Player 3"
+                    ]
+                    vm.configureOnline(roomId: roomId, myPlayer: myPlayer, names: names, client: viewModel.realtime)
+                    return ContentViewWrapper(viewModel: vm)
+                })
+                .buttonStyle(.borderedProminent)
             }
             
             Text(viewModel.systemMessage)
@@ -125,3 +140,21 @@ struct GameStatusView: View {
 //        .navigationBarTitleDisplayMode(.inline)
     }
 }
+struct ContentViewWrapper: View {
+    @StateObject var viewModel: GameViewModelNew
+    @State private var isGameStarted = true
+
+    var body: some View {
+        ContentViewInjected(viewModel: viewModel, isGameStarted: $isGameStarted)
+    }
+}
+
+struct ContentViewInjected: View {
+    @StateObject var viewModel: GameViewModelNew
+    @Binding var isGameStarted: Bool
+
+    var body: some View {
+        ContentView(viewModel: viewModel, isGameStarted: $isGameStarted)
+    }
+}
+

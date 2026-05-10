@@ -25,10 +25,13 @@ class GameViewModel: ObservableObject {
     @Published var incomingInviteFrom: String?
     @Published var pendingInviteTo: String?
     @Published var activeGameRoomId: String?
+    @Published var isHostForActiveGame: Bool? = nil
+    @Published var opponentName: String? = nil
     @Published var systemMessage: String = "Connect and join lobby to invite a player."
     
     // MARK: - Private Properties
     private let realtimeClient: SupabaseRealtimeClient
+    var realtime: SupabaseRealtimeClient { realtimeClient }
     // MARK: - Initialization
     init(
         playerName: String,
@@ -91,6 +94,7 @@ class GameViewModel: ObservableObject {
         }
         
         pendingInviteTo = target
+        opponentName = target
         systemMessage = "Invite sent to \(target)."
         
         realtimeClient.broadcast(
@@ -108,6 +112,9 @@ class GameViewModel: ObservableObject {
         guard let inviter = incomingInviteFrom else {
             return
         }
+        
+        isHostForActiveGame = false
+        opponentName = inviter
         
         let gameRoomId = Self.makeGameRoomId(playerA: inviter, playerB: playerName)
         incomingInviteFrom = nil
@@ -220,6 +227,8 @@ class GameViewModel: ObservableObject {
             }
             activeGameRoomId = roomId
             pendingInviteTo = nil
+            isHostForActiveGame = true
+            opponentName = from
             moveToGameRoom(roomId)
         } else {
             pendingInviteTo = nil
@@ -294,3 +303,4 @@ extension GameViewModel: SupabaseRealtimeClientDelegate {
         }
     }
 }
+

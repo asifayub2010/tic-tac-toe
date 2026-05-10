@@ -1,82 +1,107 @@
 import SwiftUI
-
-struct ContentView: View {
-    @StateObject private var viewModel = GameViewModelNew()
-    @State private var showResetConfirmation = false
-    @State private var isGameStarted = false
-    
-    var body: some View {
-        Group {
-            if isGameStarted {
-                gameView
-            } else {
-                SettingsView(viewModel: viewModel, isGameStarted: $isGameStarted)
-            }
-        }
-    }
-    
-    private var gameView: some View {
-        ZStack {
-            // Background
-            LinearGradient(
-                gradient: Gradient(colors: [
-                    Color(red: 0.10, green: 0.10, blue: 0.18),
-                    Color(red: 0.06, green: 0.08, blue: 0.12)
-                ]),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-            
-            VStack(spacing: 16) {
-                // Header
-                HeaderView(viewModel: viewModel, onBack: {
-                    isGameStarted = false
-                })
-                
-                // Scoreboard
-                ScoreboardView(viewModel: viewModel)
-                    .padding(.horizontal)
-                
-                // Game Board
-                GameBoardView(viewModel: viewModel)
-                    .padding(.bottom, 8)
-                
-                // Reset Button
-                ResetButtonView {
-                    showResetConfirmation = true
-                }
-                .padding(.bottom, 20)
-            }
-        }
-        .alert("Game Over", isPresented: $viewModel.showWinnerAlert) {
-            Button("New Game") {
-                viewModel.resetGame()
-            }
-            Button("Full Reset") {
-                viewModel.resetFullGame()
-            }
-        } message: {
-            Text(viewModel.winnerMessage)
-        }
-        .actionSheet(isPresented: $showResetConfirmation) {
-            ActionSheet(
-                title: Text("Reset Game"),
-                message: Text("Reset current game or full stats?"),
-                buttons: [
-                    .default(Text("Reset Current Game")) {
-                        viewModel.resetGame()
-                    },
-                    .destructive(Text("Reset Full Stats")) {
-                        viewModel.resetFullGame()
-                    },
-                    .cancel()
-                ]
-            )
-        }
-    }
-}
-
+//
+//struct ContentView: View {
+//    @StateObject private var viewModel = GameViewModelNew()
+//    @State private var showResetConfirmation = false
+//    @State private var isGameStarted = false
+//    
+//    var body: some View {
+//        Group {
+//            if isGameStarted {
+//                gameView
+//            }
+////            else {
+////                SettingsView(viewModel: viewModel, isGameStarted: $isGameStarted)
+////            }
+//        }
+//    }
+//    
+//    private var gameView: some View {
+//        ZStack {
+//            // Background
+//            LinearGradient(
+//                gradient: Gradient(colors: [
+//                    Color(red: 0.10, green: 0.10, blue: 0.18),
+//                    Color(red: 0.06, green: 0.08, blue: 0.12)
+//                ]),
+//                startPoint: .topLeading,
+//                endPoint: .bottomTrailing
+//            )
+//            .ignoresSafeArea()
+//            
+//            VStack(spacing: 16) {
+//                // Header
+//                HeaderView(viewModel: viewModel, onBack: {
+//                    isGameStarted = false
+//                })
+//                
+//                // Scoreboard
+//                ScoreboardView(viewModel: viewModel)
+//                    .padding(.horizontal)
+//                
+//                // Game Board
+//                GameBoardView(viewModel: viewModel)
+//                    .padding(.bottom, 8)
+//                
+//                // Reset Button
+//                ResetButtonView {
+//                    showResetConfirmation = true
+//                }
+//                .padding(.bottom, 20)
+//            }
+//        }
+//        .alert("Game Over", isPresented: $viewModel.showWinnerAlert) {
+//            if viewModel.gameMode.isOnline {
+//                if viewModel.pendingRematchOfferFrom != nil {
+//                    Button("Accept") { viewModel.acceptRematchOffer() }
+//                    Button("Decline", role: .destructive) { viewModel.declineRematchOffer() }
+//                } else if viewModel.isAwaitingRematchResponse {
+//                    Button("Cancel & Exit", role: .destructive) { viewModel.exitToLobby() }
+//                } else if viewModel.canOfferRematchNow {
+//                    Button("Play Again") { viewModel.offerRematch() }
+//                    Button("Exit", role: .destructive) { viewModel.exitToLobby() }
+//                } else {
+//                    Button("Exit", role: .destructive) { viewModel.exitToLobby() }
+//                }
+//            } else {
+//                Button("New Game") { viewModel.resetGame() }
+//                Button("Full Reset") { viewModel.resetFullGame() }
+//            }
+//        } message: {
+//            Text(viewModel.winnerMessage)
+//        }
+//        .actionSheet(isPresented: $showResetConfirmation) {
+//            ActionSheet(
+//                title: Text("Reset Game"),
+//                message: Text("Reset current game or full stats?"),
+//                buttons: [
+//                    .default(Text("Reset Current Game")) {
+//                        viewModel.resetGame()
+//                    },
+//                    .destructive(Text("Reset Full Stats")) {
+//                        viewModel.resetFullGame()
+//                    },
+//                    .cancel()
+//                ]
+//            )
+//        }
+//        .onChange(of: viewModel.gameResult) { newValue in
+//            if viewModel.gameMode.isOnline,
+//               case .draw = newValue,
+//               viewModel.myPlayerType == viewModel.currentPlayer,
+//               !viewModel.isAwaitingRematchResponse,
+//               viewModel.pendingRematchOfferFrom == nil {
+//                viewModel.offerRematch()
+//            }
+//        }
+//        .onChange(of: viewModel.shouldExitToLobby) { shouldExit in
+//            if shouldExit {
+//                isGameStarted = false
+//            }
+//        }
+//    }
+//}
+//
 // MARK: - Header View
 struct HeaderView: View {
     @ObservedObject var viewModel: GameViewModelNew
@@ -172,7 +197,7 @@ struct ResetButtonView: View {
         .padding(.horizontal, 32)
     }
 }
-
-#Preview {
-    ContentView()
-}
+//
+//#Preview {
+//    ContentView()
+//}
